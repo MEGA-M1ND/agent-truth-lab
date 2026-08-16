@@ -1,5 +1,8 @@
 # AgentTruthLab
 
+[![CI](https://github.com/MEGA-M1ND/agent-truth-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/MEGA-M1ND/agent-truth-lab/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+
 **When an AI agent reports "task completed" and its tools return `200 OK`, is the external system actually in the intended state?**
 
 <picture>
