@@ -1,0 +1,18 @@
+# Secrets
+.env
+
+# Run outputs (charts are committed; raw run data is not)
+results/**/*.json
+results/**/*.csv
+results/**/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/

@@ -1,0 +1,5 @@
+# Normalize to LF in the repository regardless of the checkout platform.
+* text=auto eol=lf
+
+# Charts are binary; never touch them.
+*.png binary

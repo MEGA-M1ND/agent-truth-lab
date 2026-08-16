@@ -1,0 +1,12 @@
+# AgentTruthLab experiment configuration.
+# The agent under test is deliberately a small/cheap model (configurable);
+# quality of the agent is not what we measure — truthfulness of its success
+# signals is.
+model: claude-haiku-4-5
+seeds: [42, 43, 44]
+max_turns: 8
+max_tokens: 1024
+# temperature applies to models that accept it (Haiku 4.5 does). Set to null
+# for models that reject sampling params (Opus 4.7+/Sonnet 5).
+temperature: 0.0
+arms: [A, B, C, D]
