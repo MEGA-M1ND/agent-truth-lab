@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install ruff
+      - run: ruff check .
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # The whole suite is offline by design: the agent loop is driven by a
+      # scripted fake client, so no ANTHROPIC_API_KEY is needed and CI never
+      # spends money.
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  cli:
+    name: cli smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      # Exercises config loading, the deterministic mission builder, and the
+      # cost estimator without calling the API — this is the step that would
+      # catch a broken entrypoint before someone tries to reproduce the run.
+      - name: cost estimate runs without an API key
+        run: atl-run --estimate-only
+      - name: entrypoints are wired
+        run: |
+          atl-report --help
+          atl-rescore --help
+
+  determinism:
+    name: seed determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      # The experiment's central claim is that a run is reproducible from a
+      # seed. Assert it on a different OS than it was developed on: the same
+      # seed must produce a byte-identical database and mission set.
+      - name: same seed reproduces byte-identical state
+        run: |
+          python - <<'PY'
+          from agent_truth_lab.agent import missions
+          from agent_truth_lab.environment import db
+
+          def build(seed):
+              conn = db.connect(":memory:")
+              db.init_db(conn)
+              db.seed(conn, seed)
+              dump = db.dump(conn)
+              spec = [m.to_dict() for m in missions.build_missions(conn)]
+              conn.close()
+              return dump, spec
+
+          a_dump, a_spec = build(42)
+          b_dump, b_spec = build(42)
+          c_dump, _ = build(43)
+
+          assert a_dump == b_dump, "same seed produced different databases"
+          assert a_spec == b_spec, "same seed produced different missions"
+          assert a_dump != c_dump, "different seeds produced identical databases"
+          assert len(a_spec) == 40, f"expected 40 missions, got {len(a_spec)}"
+          print(f"OK: seed 42 reproducible, {len(a_spec)} missions, "
+                f"{len(a_dump)} bytes of state")
+          PY
