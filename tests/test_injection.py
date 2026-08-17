@@ -455,3 +455,104 @@ def test_injection_only_touches_targeted_tool(conn):
         "SELECT status FROM subscriptions WHERE id = ?", (sub["id"],)
     ).fetchone()
     assert after["status"] == "active"  # the clean tool really ran
+
+
+# ---------------------------------------------------------------------------
+# read tools (M7): truthful by default, stale_read on the read channel itself
+# ---------------------------------------------------------------------------
+
+
+def test_read_tool_truthful_by_default(conn):
+    """No injection targets the read tool: it just tells the truth."""
+    order = delivered_order(conn)
+    injector = make_injector(conn, {"issue_refund": "silent_noop"})
+    injector.call(
+        "issue_refund",
+        {"order_id": order["id"], "amount_paise": order["amount_paise"], "reason": "r"},
+    )  # F1: the write claimed success but did nothing
+
+    read = injector.call("get_refund", {"order_id": order["id"]})
+
+    assert read.ok
+    assert read.data["refunds"] == []  # the read correctly unmasks the F1 lie
+
+
+def test_read_tool_validate_plan_rejects_non_stale_mode():
+    with pytest.raises(ValueError, match="only stale_read"):
+        validate_plan({"get_order": "silent_noop"})
+
+
+def test_read_tool_stale_read_shows_pre_episode_snapshot(conn):
+    """A staled read tool answers from before the episode's first tool call,
+    even though the write genuinely committed on the live connection."""
+    order = delivered_order(conn)
+    injector = make_injector(conn, {"get_refund": "stale_read"})
+
+    # The write is clean and genuinely commits on the live DB.
+    write = injector.call(
+        "issue_refund",
+        {"order_id": order["id"], "amount_paise": order["amount_paise"], "reason": "rtn"},
+    )
+    assert write.ok
+
+    # But the read tool for the same order reports the pre-episode state: no
+    # refund exists, exactly as if it hit a replica that never saw this write.
+    stale = injector.call("get_refund", {"order_id": order["id"]})
+    assert stale.ok
+    assert stale.data["refunds"] == []
+
+    # The live DB really does have the refund — proving this is a stale read,
+    # not a lost write like the write-side F5.
+    live = conn.execute(
+        "SELECT COUNT(*) AS n FROM refunds WHERE order_id = ?", (order["id"],)
+    ).fetchone()["n"]
+    assert live == 1
+
+
+def test_read_tool_stale_read_only_affects_the_targeted_tool(conn):
+    """Staling get_refund must not affect get_order in the same episode."""
+    order = delivered_order(conn)
+    injector = make_injector(conn, {"get_refund": "stale_read"})
+    injector.call(
+        "issue_refund",
+        {"order_id": order["id"], "amount_paise": order["amount_paise"], "reason": "rtn"},
+    )
+
+    order_read = injector.call("get_order", {"order_id": order["id"]})
+    assert order_read.ok and order_read.data["status"] == "refunded"  # truthful
+
+
+def test_read_tool_baseline_predates_the_first_tool_call(conn):
+    """The baseline is frozen at Injector construction, before ANY episode call —
+    including calls to tools the plan never targets."""
+    order = delivered_order(conn)
+    injector = make_injector(conn, {"get_order": "stale_read"})
+    # A clean call on an unrelated tool happens first...
+    tools.update_order_status(conn, db.SimClock(), order["id"], "delivered")  # no-op change
+    # ...then the tracked order is mutated by a live write.
+    injector.call(
+        "issue_refund",
+        {"order_id": order["id"], "amount_paise": order["amount_paise"], "reason": "rtn"},
+    )
+
+    staled = injector.call("get_order", {"order_id": order["id"]})
+    assert staled.data["status"] == "delivered"  # baseline predates the refund
+
+
+def test_read_tool_no_baseline_connection_created_when_unneeded(conn):
+    """No baseline snapshot is taken unless the plan actually stales a read."""
+    injector = make_injector(conn, {"issue_refund": "silent_noop"})
+    assert injector._baseline is None
+    injector.close()  # must not raise when there is nothing to close
+
+
+def test_read_tool_injector_close_releases_baseline(conn):
+    injector = make_injector(conn, {"get_order": "stale_read"})
+    assert injector._baseline is not None
+    injector.close()
+    assert injector._baseline is None
+
+
+def test_read_tool_unknown_tool_still_rejected(conn):
+    with pytest.raises(ValueError, match="unknown tool"):
+        make_injector(conn, {}).call("delete_everything", {})

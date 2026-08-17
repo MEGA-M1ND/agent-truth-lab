@@ -19,6 +19,7 @@ from enum import StrEnum
 from typing import Any
 
 from agent_truth_lab.agent.missions import Mission
+from agent_truth_lab.injection.modes import READ_TOOLS
 from agent_truth_lab.verification.recovery import (
     RecoveryOutcome,
     RecoveryResult,
@@ -113,13 +114,22 @@ def arm_a(record: dict[str, Any]) -> ArmReport:
 
 
 def arm_b(record: dict[str, Any]) -> ArmReport:
-    """Arm B — believe the tool responses; the agent's words are ignored."""
-    calls = record.get("tool_calls", [])
+    """Arm B — believe the tool responses; the agent's words are ignored.
+
+    Only write-tool calls count. An agent given read tools (M7) may
+    legitimately probe state that doesn't exist yet (e.g. "has this order
+    already been refunded?" before acting) — that is a normal exploratory
+    read, not evidence the mission failed, and folding it into "trust the
+    200s" would silently confound the read-tool experiment with an unrelated
+    change in Arm B's false-failure rate. Arm B judges the actions that
+    changed state, not the probes.
+    """
+    calls = [c for c in record.get("tool_calls", []) if c["tool_name"] not in READ_TOOLS]
     if not calls:
         return ArmReport(
             "B",
             Outcome.FAILURE,
-            "no tool call returned a result"
+            "no write tool call returned a result"
             f" (stop_reason={record.get('stop_reason')})",
         )
     failures = [c for c in calls if not c["result"]["ok"]]

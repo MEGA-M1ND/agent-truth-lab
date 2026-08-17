@@ -1,7 +1,10 @@
-"""The 5 tools exposed to the agent — clean, genuinely correct implementations.
+"""The 5 write tools plus 4 read-only tools — clean, genuinely correct implementations.
 
-These are the ONLY mutation paths the agent has. The failure-injection layer
-(M2) wraps these functions; nothing here knows injection exists.
+The 5 write tools are the ONLY mutation paths the agent has. The 4 read tools
+(M7 addition) let an agent that is given them attempt to verify its own
+writes; they are opt-in on the agent's tool schema (see agent/loop.py) and
+never mutate anything. The failure-injection layer (M2) wraps both; nothing
+here knows injection exists.
 
 Envelope: every tool returns a ToolResult
     {ok: bool, http_status: int, data: {...}, error: str | null}
@@ -357,3 +360,72 @@ def send_customer_email(
             "created_at": created_at,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# read tools — never mutate; take the same (conn, clock, **args) shape as the
+# write tools so the injector's dispatch table stays uniform, even though
+# none of them use the clock.
+# ---------------------------------------------------------------------------
+
+
+def get_order(conn: sqlite3.Connection, clock: SimClock, order_id: int) -> ToolResult:
+    """Read-only: the current state of one order."""
+    if not _is_int(order_id):
+        return _err(400, "order_id must be an integer")
+    order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+    if order is None:
+        return _err(404, f"order {order_id} not found")
+    return _ok(dict(order))
+
+
+def get_refund(conn: sqlite3.Connection, clock: SimClock, order_id: int) -> ToolResult:
+    """Read-only: every refund recorded against an order.
+
+    An order with no refunds yet is a normal state, not an error: this
+    returns ok:true with an empty list, so a proactive "has this already
+    been refunded?" check never looks like a tool failure.
+    """
+    if not _is_int(order_id):
+        return _err(400, "order_id must be an integer")
+    order = conn.execute("SELECT id FROM orders WHERE id = ?", (order_id,)).fetchone()
+    if order is None:
+        return _err(404, f"order {order_id} not found")
+    refunds = conn.execute(
+        "SELECT * FROM refunds WHERE order_id = ? ORDER BY id", (order_id,)
+    ).fetchall()
+    return _ok({"order_id": order_id, "refunds": [dict(r) for r in refunds]})
+
+
+def get_subscription(
+    conn: sqlite3.Connection, clock: SimClock, subscription_id: int
+) -> ToolResult:
+    """Read-only: a subscription's current state plus its latest charge attempt."""
+    if not _is_int(subscription_id):
+        return _err(400, "subscription_id must be an integer")
+    sub = conn.execute(
+        "SELECT * FROM subscriptions WHERE id = ?", (subscription_id,)
+    ).fetchone()
+    if sub is None:
+        return _err(404, f"subscription {subscription_id} not found")
+    latest_charge = conn.execute(
+        "SELECT * FROM charges WHERE subscription_id = ? ORDER BY id DESC LIMIT 1",
+        (subscription_id,),
+    ).fetchone()
+    data = dict(sub)
+    data["latest_charge"] = dict(latest_charge) if latest_charge else None
+    return _ok(data)
+
+
+def get_settlement(
+    conn: sqlite3.Connection, clock: SimClock, merchant_day: str
+) -> ToolResult:
+    """Read-only: the settlement for a merchant day, if one has been created."""
+    if not isinstance(merchant_day, str):
+        return _err(400, "merchant_day must be a YYYY-MM-DD string")
+    settlement = conn.execute(
+        "SELECT * FROM settlements WHERE merchant_day = ?", (merchant_day,)
+    ).fetchone()
+    if settlement is None:
+        return _err(404, f"no settlement for {merchant_day}")
+    return _ok(dict(settlement))

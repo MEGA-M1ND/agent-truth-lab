@@ -76,6 +76,19 @@ CLEAN_TOOLS: dict[str, Callable[..., ToolResult]] = {
     "send_customer_email": tools.send_customer_email,
 }
 
+# Read-only tools (M7): an agent that is given these can attempt to verify
+# its own writes. Never mutate. Only 'stale_read' is a meaningful injection
+# on a read — see injector.py, which routes a staled read to a baseline
+# snapshot taken before the episode's first tool call, simulating a replica
+# that never saw anything this episode wrote (a genuinely hard case: even a
+# diligent self-check can be lied to if the read channel is compromised).
+READ_TOOLS: dict[str, Callable[..., ToolResult]] = {
+    "get_order": tools.get_order,
+    "get_refund": tools.get_refund,
+    "get_subscription": tools.get_subscription,
+    "get_settlement": tools.get_settlement,
+}
+
 # Tools whose implementation is a multi-step write; only these can partially complete.
 MULTI_STEP_TOOLS = frozenset({"issue_refund", "retry_subscription_charge"})
 

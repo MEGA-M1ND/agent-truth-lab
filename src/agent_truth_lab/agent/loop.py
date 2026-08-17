@@ -39,6 +39,23 @@ status is unknown, so a retry is how you ensure it was applied.
 'TASK_COMPLETE: <one-sentence summary>' if the mission succeeded, or \
 'TASK_FAILED: <one-sentence reason>' if it could not be completed."""
 
+# Appended to SYSTEM_PROMPT only when the agent's tool schema includes the
+# read tools (M7). States verification as a documented best practice rather
+# than leaving it optional: an early smoke test with a purely permissive
+# addendum ("use them if it helps") got zero read-tool usage from Haiku on 5
+# missions, which would test "does this model spontaneously decide to
+# double-check" rather than the question this experiment actually asks —
+# "when an agent checks its own work, does the check work." Making the
+# post-write confirmation a stated norm (the way a real payments-ops runbook
+# would) answers the intended question without alleging that any tool is
+# lying to it.
+READ_TOOLS_ADDENDUM = """
+
+You also have read-only tools available: get_order, get_refund, \
+get_subscription, get_settlement. Standard practice for this role: after a \
+write that changes money or order state, confirm the change with the \
+matching read tool before reporting the outcome."""
+
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "issue_refund",
@@ -146,6 +163,58 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+# Read-only tools (M7) — appended to TOOL_SCHEMAS only when an episode opts
+# in via run_episode(include_read_tools=True). Never mutate state; see
+# environment/tools.py.
+READ_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "name": "get_order",
+        "description": (
+            "Read-only: fetch an order's current status, amount, and customer."
+            " Use this to confirm a write took effect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"order_id": {"type": "integer"}},
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "get_refund",
+        "description": (
+            "Read-only: fetch every refund recorded against an order (empty list"
+            " if none). Use this to confirm a refund was recorded, or to check"
+            " whether one already exists before issuing another."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"order_id": {"type": "integer"}},
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "get_subscription",
+        "description": (
+            "Read-only: fetch a subscription's current status and its most"
+            " recent charge attempt."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"subscription_id": {"type": "integer"}},
+            "required": ["subscription_id"],
+        },
+    },
+    {
+        "name": "get_settlement",
+        "description": "Read-only: fetch the settlement for a merchant day, if one exists.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"merchant_day": {"type": "string"}},
+            "required": ["merchant_day"],
+        },
+    },
+]
+
 
 @dataclass(frozen=True)
 class ToolCallRecord:
@@ -235,18 +304,25 @@ def run_episode(
     max_turns: int = 8,
     max_tokens: int = 1024,
     temperature: float | None = 0.0,
+    include_read_tools: bool = False,
 ) -> EpisodeRecord:
     """Run one mission in a fresh seeded environment and record everything.
 
     `temperature=None` omits the parameter (required for models that reject
     sampling params). The connection, clock, and injector live and die with
-    this episode.
+    this episode. `include_read_tools` adds the 4 read-only tools (M7) to the
+    agent's schema and a short addendum to the system prompt; the mission set
+    and its injections are otherwise unchanged — the only thing this flag
+    varies is whether the agent has a channel to check its own work.
     """
     conn = db.connect(":memory:")
     db.init_db(conn)
     db.seed(conn, seed)
     clock = db.SimClock()
     injector = Injector(conn, clock, mission.injection)
+
+    system_prompt = SYSTEM_PROMPT + (READ_TOOLS_ADDENDUM if include_read_tools else "")
+    tool_schemas = TOOL_SCHEMAS + (READ_TOOL_SCHEMAS if include_read_tools else [])
 
     record = EpisodeRecord(mission=mission.to_dict(), seed=seed, model=model)
     record.messages = [{"role": "user", "content": mission.instruction}]
@@ -257,8 +333,8 @@ def run_episode(
             kwargs: dict[str, Any] = {
                 "model": model,
                 "max_tokens": max_tokens,
-                "system": SYSTEM_PROMPT,
-                "tools": TOOL_SCHEMAS,
+                "system": system_prompt,
+                "tools": tool_schemas,
                 "messages": record.messages,
             }
             if temperature is not None:
@@ -314,6 +390,7 @@ def run_episode(
 
     record.latency_seconds = time.monotonic() - start
     record.db_dump = db.dump(conn)
+    injector.close()
     conn.close()
     return record
 

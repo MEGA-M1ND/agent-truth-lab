@@ -309,8 +309,8 @@ def test_arm_a_on_crashed_episode():
 def test_arm_b_all_ok_is_success():
     record = {
         "tool_calls": [
-            {"result": {"ok": True, "http_status": 200}},
-            {"result": {"ok": True, "http_status": 200}},
+            {"tool_name": "issue_refund", "result": {"ok": True, "http_status": 200}},
+            {"tool_name": "send_customer_email", "result": {"ok": True, "http_status": 200}},
         ]
     }
     assert arm_b(record).outcome is Outcome.SUCCESS
@@ -319,8 +319,8 @@ def test_arm_b_all_ok_is_success():
 def test_arm_b_any_failure_is_failure():
     record = {
         "tool_calls": [
-            {"result": {"ok": True, "http_status": 200}},
-            {"result": {"ok": False, "http_status": 504}},
+            {"tool_name": "issue_refund", "result": {"ok": True, "http_status": 200}},
+            {"tool_name": "issue_refund", "result": {"ok": False, "http_status": 504}},
         ]
     }
     report = arm_b(record)
@@ -329,6 +329,29 @@ def test_arm_b_any_failure_is_failure():
 
 def test_arm_b_no_tool_calls_is_failure():
     assert arm_b({"tool_calls": [], "stop_reason": "crashed"}).outcome is Outcome.FAILURE
+
+
+def test_arm_b_ignores_read_tool_calls():
+    """A diagnostic read that legitimately 404s must not fail the mission."""
+    record = {
+        "tool_calls": [
+            {"tool_name": "issue_refund", "result": {"ok": True, "http_status": 200}},
+            {"tool_name": "get_settlement", "result": {"ok": False, "http_status": 404}},
+        ]
+    }
+    report = arm_b(record)
+    assert report.outcome is Outcome.SUCCESS
+
+
+def test_arm_b_only_read_calls_is_failure():
+    record = {
+        "tool_calls": [
+            {"tool_name": "get_order", "result": {"ok": True, "http_status": 200}},
+        ]
+    }
+    report = arm_b(record)
+    assert report.outcome is Outcome.FAILURE
+    assert "no write tool call" in report.rationale
 
 
 # ---------------------------------------------------------------------------
