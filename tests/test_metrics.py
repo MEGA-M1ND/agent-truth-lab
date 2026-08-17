@@ -183,6 +183,17 @@ def test_state_metrics():
     assert s.crashed == 1
 
 
+def test_api_errors_are_counted_separately():
+    """Infrastructure failures must be visible, not folded into agent failure."""
+    clean = make_evaluation(truth=False)
+    broken = make_evaluation(truth=False)
+    broken.api_error = True
+
+    s = metrics.compute_state_metrics([clean, broken])
+    assert s.api_errors == 1
+    assert s.to_dict()["api_errors"] == 1
+
+
 def test_verifier_blind_spot_counts_passing_episodes_with_damage():
     """Damage outside the mission frame does not fail the verdict — measure it."""
     evaluations = [

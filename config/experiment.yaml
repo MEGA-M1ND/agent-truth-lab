@@ -1,12 +1,26 @@
 # AgentTruthLab experiment configuration.
-# The agent under test is deliberately a small/cheap model (configurable);
-# quality of the agent is not what we measure — truthfulness of its success
-# signals is.
-model: claude-haiku-4-5
+#
+# The agents under test are deliberately ordinary deployment choices; what is
+# being measured is the truthfulness of their success signals, not their
+# competence. Running two capability tiers answers the obvious follow-up:
+# does a more capable model overclaim less?
+models:
+  - claude-haiku-4-5
+  - claude-sonnet-5
+
 seeds: [42, 43, 44]
+
+# Draw archetype mix and injection assignment from the seed as well as the
+# data, so cross-seed spread reflects genuine task-mix variation. Set false to
+# reproduce the v1 fixed mission set.
+structural_variance: true
+
 max_turns: 8
-max_tokens: 1024
-# temperature applies to models that accept it (Haiku 4.5 does). Set to null
-# for models that reject sampling params (Opus 4.7+/Sonnet 5).
-temperature: 0.0
+# Roomy enough for models whose thinking counts against the output budget.
+max_tokens: 4096
+# Omitted entirely: Claude Sonnet 5 rejects non-default sampling parameters,
+# and letting each model run at its own default keeps the comparison free of a
+# per-model configuration confound.
+temperature: null
+
 arms: [A, B, C, D]

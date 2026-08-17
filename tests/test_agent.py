@@ -142,6 +142,85 @@ def test_mission_round_trip(mission_set):
 
 
 # ---------------------------------------------------------------------------
+# structural variance
+# ---------------------------------------------------------------------------
+
+
+def varied(seed: int):
+    conn = fresh_env(seed)
+    try:
+        return missions.build_missions(conn, seed=seed, structural_variance=True)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("seed", [42, 43, 44])
+def test_varied_set_honours_coverage_constraints(seed):
+    """Variance may reshuffle the mix, never break the experiment's floors."""
+    from agent_truth_lab.injection.modes import FailureMode
+
+    mission_set = varied(seed)
+    assert len(mission_set) == 40
+    assert sum(1 for m in mission_set if not m.injection) == missions.CLEAN_MISSION_COUNT
+    assert sum(1 for m in mission_set if m.injection) == missions.INJECTED_MISSION_COUNT
+
+    counts = {mode.value: 0 for mode in FailureMode}
+    for mission in mission_set:
+        for mode in mission.injection.values():
+            counts[mode] += 1
+    assert all(n >= missions.MIN_PER_MODE for n in counts.values()), counts
+
+
+@pytest.mark.parametrize("seed", [42, 43, 44])
+def test_varied_injections_target_tools_the_mission_uses(seed):
+    """Injecting into a tool the mission never calls would be a silent no-op."""
+    for mission in varied(seed):
+        if not mission.injection:
+            continue
+        allowed = missions.ARCHETYPE_TOOLS[mission.archetype]
+        for tool, mode in mission.injection.items():
+            assert tool in allowed, f"{mission.mission_id}: {tool} not in {allowed}"
+            if mode == "partial_completion":
+                assert tool in ("issue_refund", "retry_subscription_charge")
+
+
+def test_varied_set_is_deterministic():
+    assert [m.to_dict() for m in varied(42)] == [m.to_dict() for m in varied(42)]
+
+
+def test_seeds_produce_structurally_different_sets():
+    """The point of the mode: seeds vary task mix, not just entity ids."""
+    structures = {
+        seed: [(m.archetype, tuple(sorted(m.injection.items()))) for m in varied(seed)]
+        for seed in (42, 43, 44)
+    }
+    assert structures[42] != structures[43]
+    assert structures[43] != structures[44]
+
+
+def test_varied_set_covers_multiple_archetypes():
+    for seed in (42, 43, 44):
+        archetypes = {m.archetype for m in varied(seed)}
+        assert len(archetypes) >= 5, archetypes
+
+
+def test_structural_variance_requires_a_seed():
+    conn = fresh_env()
+    with pytest.raises(ValueError, match="requires a seed"):
+        missions.build_missions(conn, structural_variance=True)
+    conn.close()
+
+
+def test_fixed_set_is_still_the_default(mission_set):
+    """The published v1 numbers must stay reproducible."""
+    conn = fresh_env()
+    assert [m.to_dict() for m in missions.build_missions(conn)] == [
+        m.to_dict() for m in mission_set
+    ]
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # agent loop
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 # Findings
 
-Model under test: `claude-haiku-4-5` · seeds [42, 43, 44] · 120 episodes (40 missions x 3 seeds).
+Model under test: `claude-sonnet-5` · seeds [42, 43, 44] · 120 episodes (40 missions x 3 seeds).
 
 ![False success rate by arm](results/headline_false_success_rate.png)
 
@@ -37,8 +37,8 @@ Model under test: `claude-haiku-4-5` · seeds [42, 43, 44] · 120 episodes (40 m
 
 ## Cost of assurance vs cost of the work
 
-- Agent: 490,313 input / 29,809 output tokens, ~3.70s per episode
-- Verifier: **0 tokens**, ~6.6ms and ~20 DB reads per episode
+- Agent: 614,924 input / 40,147 output tokens, ~5.83s per episode
+- Verifier: **0 tokens**, ~7.7ms and ~20 DB reads per episode
 
 ## Reading these numbers honestly
 

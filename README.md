@@ -7,13 +7,16 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="results/headline_false_success_rate_dark.png">
-  <img src="results/headline_false_success_rate.png" alt="False success rate by verification arm: agent self-report 52%, tool responses 40%, state verifier 0%, verifier plus recovery 0%">
+  <img src="results/headline_false_success_rate.png" alt="False success rate by verification arm: agent self-report 51%, tool responses 39%, state verifier 0%, verifier plus recovery 0%">
 </picture>
 
-Across 120 episodes of payment operations under silent tool failures, the agent's own
-completion claim was wrong **52%** of the time, and trusting HTTP 200 responses was wrong
-**40%** of the time. Both signals are *observability* — they report what the actor
-believed and what the API said. Neither reads the database.
+Across 120 episodes of payment operations under silent tool failures — task mix and
+injection assignment drawn independently per seed — the agent's own completion claim was
+wrong **50.8% [47.5%, 55.0%]** of the time, and trusting HTTP 200 responses was wrong
+**39.2% [35.0%, 42.5%]**. Both signals are *observability* — they report what the actor
+believed and what the API said. Neither reads the database. Running a second, more capable
+model changed **nothing**: identical false-success rate on every arm, to the decimal point
+— see [below](#does-a-more-capable-agent-overclaim-less).
 
 ## The thesis: observability is not assurance
 
@@ -33,20 +36,22 @@ In this experiment it is: the verifier costs **0 tokens, ~8 ms, and ~20 database
 per episode, against ~4 seconds and ~4,600 tokens for the agent turn it checks.
 
 The payoff is that assurance composes into repair. Once you can tell what actually
-happened, a rule-based playbook can diagnose the divergence and fix most of it: **78% of
-damaged episodes recovered automatically**, with the remainder escalated as structured
+happened, a rule-based playbook can diagnose the divergence and fix most of it: **48/66
+damaged episodes (72.7%) recovered automatically**, the rest escalated as structured
 incidents, and **zero cases where recovery left the system worse than it found it** — a
 guarantee enforced by comparing state before and after every repair and discarding the
 whole repair if it regressed.
 
 ## Results
 
+`claude-haiku-4-5`, 40 missions × 3 seeds, task mix and injections drawn per seed:
+
 | Arm | Trusts | False success | False failure |
 |-----|--------|---------------|---------------|
-| **A** — agent self-report | the agent's own claim | **52.5%** | 0.0% |
-| **B** — tool responses | `ok: true` / HTTP 200 | **40.0%** | 7.5% |
+| **A** — agent self-report | the agent's own claim | **50.8%** [47.5, 55.0] | 0.0% |
+| **B** — tool responses | `ok: true` / HTTP 200 | **39.2%** [35.0, 42.5] | 12.5% |
 | **C** — state verifier | the database | 0.0%\* | 0.0% |
-| **D** — verifier + recovery | the database, then repairs | 0.0%\* | 5.0% |
+| **D** — verifier + recovery | the database, then repairs | 0.0%\* | 3.3% |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="results/heatmap_arm_by_mode_dark.png">
@@ -60,36 +65,85 @@ indeterminate rate (0%) and its latency. The sensitivity analysis below gives th
 non-circular number available for C. See [findings.md](findings.md) for the full statement
 of what these numbers do and do not show.
 
+### Does a more capable agent overclaim less?
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="results/model_comparison_dark.png">
+  <img src="results/model_comparison.png" alt="Model comparison: claude-haiku-4-5 vs claude-sonnet-5, false success rate identical on every arm">
+</picture>
+
+The obvious follow-up to a single-model result: does scaling up fix it? Both models ran the
+**same 120 episodes** — identical seeds, identical mission structure, identical injected
+failures — so this isolates model capability as the only variable.
+
+| Arm | `claude-haiku-4-5` | `claude-sonnet-5` |
+|-----|---------------------|---------------------|
+| A — agent self-report | 50.8% [47.5, 55.0] | 50.8% [47.5, 55.0] |
+| B — tool responses | 39.2% [35.0, 42.5] | 39.2% [35.0, 42.5] |
+| C — state verifier | 0.0% | 0.0% |
+| D — verifier + recovery | 0.0% | 0.0% |
+
+**The two models agree on every arm to the decimal point.** That is not a caching artifact
+— it was checked: the two runs are behaviorally distinct (7 of 120 episodes have different
+tool-call sequences, and Sonnet writes 35% more output tokens overall), and each model's
+database snapshot is identical only because the mission instructions are fully specified
+(exact order IDs, exact amounts), so any agent that follows them lands on the same DB state.
+What is genuinely identical is the *classified outcome* of every one of the 120 episodes.
+
+The reading that fits the design: capability didn't help because it **couldn't**. F1
+(silent no-op) and F5 (lost write) are constructed so the tool's response is indistinguishable
+from a real success — there is no signal in the response for a smarter model to reason
+better about. An agent's epistemic access is limited to what its tools tell it; if that
+channel is corrupted, better reasoning over corrupted data still produces the wrong
+conclusion. This is evidence for a **capability ceiling**, not a capability gradient — closing
+the gap needs an independent read path (verification), not a smarter model reading the same
+lie.
+
+Two caveats on that reading, stated plainly: this is two models in the same family at n=1
+each, and the missions are deliberately unambiguous (exact figures, not open-ended
+judgment calls) so that the comparison isolates trust-in-tool-response behavior rather than
+planning quality. A model with a genuinely different tool surface — e.g. a read tool it could
+use to double-check its own write — might behave differently; that is exactly the next
+experiment this project's design makes cheap to run.
+
+```bash
+atl-compare    # regenerates this chart and table from any two summary files
+```
+
 ### Does the headline depend on how "correct state" is defined?
 
 Ground truth could reasonably be drawn two ways: **frame-scoped** (the mission's assertions
 plus global invariants) or **strict** (the same, plus: any write outside the mission's
-declared frame is damage). Re-scoring the same recorded episodes against both — offline,
-with no API calls — gives:
+declared frame is damage). Re-scoring the same 240 recorded episodes (both models) against
+both definitions — offline, with no API calls — gives:
 
 | Arm | Frame-scoped | Strict |
 |-----|--------------|--------|
-| A — agent self-report | 52.5% | **55.0%** |
-| B — tool responses | 40.0% | **42.5%** |
-| C — verifier (frame-scoped) | 0.0% | **2.5%** |
+| A — agent self-report | 50.8% | 50.8% |
+| B — tool responses | 39.2% | 39.2% |
+| C — verifier (frame-scoped) | 0.0% | 0.0% |
 
-The headline gap is **robust to the choice**: A and B move by ~2 points. Three episodes
-(2.5%) flip from VERIFIED to FAILED — all of them `m22_cancel_refund_f2_wrong`, where the
-injected wrong-target write cancelled an unrelated order the mission spec never mentions.
-That last row is the only non-circular measurement of the verifier in this experiment:
-Arm C is frame-scoped, so judging it against *strict* truth uses an evaluator that differs
-from the truth judging it, and it puts a real number on what the verifier misses.
+No episodes flip between definitions in this run. That is **not** evidence the verifier's
+blind spot doesn't exist — a prior run (fixed mission structure, single model) found a real
+2.5% blind spot in exactly this mechanism: a wrong-target write landing on a row no
+assertion covers. The blind spot is a structural possibility that depends on which
+archetype/injection combination the seed happens to draw, not a constant percentage — this
+run's random draw didn't happen to produce that combination. Reporting "0% this time" without
+that context would be the same mistake as reporting a favorable number and staying quiet
+about why it moved.
 
 ```bash
 atl-rescore    # regenerates this table from stored runs, no API key needed
 ```
 
-Two findings worth calling out. **F7 (process crash after the side effect commits) is the
-one mode where the agent does not overclaim** — it never gets to speak, so Arm A reports
-INDETERMINATE rather than success; the damage is real but the lie is not. And where **Arm B
-scores better than Arm A** (F2, F3), it is never because a response revealed the true state:
-on F3 the injected timeout is itself a non-200, and the single F2 case where B dissents is a
-charge that was diverted onto an underfunded customer and declined on its own.
+Two findings worth calling out, checked at the episode level rather than assumed. **F7
+(process crash after the side effect commits) is the one mode where the agent does not
+overclaim** — 13/13 crash episodes return Arm A = INDETERMINATE, never SUCCESS; the agent
+never gets to speak, so the damage is real but the lie is not. And **every case where Arm B
+disagrees with Arm A** traces to one of two causes that have nothing to do with a response
+revealing the truth: a legitimate `402` decline on a `retry_declined` mission (the tool
+correctly reports a real business decline), or F3's injected timeout being a non-200 on its
+own terms. Arm B is never right *because* it caught the lie.
 
 ## Reproduce it
 
@@ -100,18 +154,27 @@ export ANTHROPIC_API_KEY=sk-ant-...
 atl-run --report
 ```
 
-That runs 40 missions × 3 seeds, evaluates all four arms, and writes the charts and
-`findings.md`. It prints a cost estimate and waits for nothing — the full run costs about
-**$0.69** and takes ~8 minutes on `claude-haiku-4-5` (the model is configurable in
-`config/experiment.yaml`; the agent is deliberately a cheap model because what is being
-measured is the truthfulness of success signals, not the agent's competence).
+That runs 40 missions × 3 seeds for **every** model listed in `config/experiment.yaml`
+(`claude-haiku-4-5` and `claude-sonnet-5` by default), evaluates all four arms per model,
+and writes per-model charts and findings plus a cross-model comparison. It prints a cost
+estimate before spending anything — the two-model run costs about **$2.60** and takes
+roughly 15–20 minutes. `atl-run --model claude-haiku-4-5` runs a single model for about
+**$0.65** in a few minutes if you just want the base result.
 
 ```bash
 atl-run --estimate-only        # print the cost estimate and exit
 atl-run --seeds 42 --limit 5   # a quick partial run
+atl-run --model claude-opus-5  # one model, overriding the config
 atl-rescore                    # re-score stored runs offline (no API key)
-pytest                         # 163 tests, no API key needed
+atl-compare                    # cross-model chart from existing summaries
+pytest                         # 182 tests, no API key needed
 ```
+
+`config/experiment.yaml` drives everything. `models:` takes a list, so adding a
+capability tier to the comparison is a one-line change; `structural_variance: true`
+draws the archetype mix and injection assignment from the seed as well as the data,
+so cross-seed spread reflects genuine task-mix variation rather than only which
+orders happened to be selected. Set it to `false` to reproduce the fixed v1 set.
 
 ## How it works
 
@@ -149,9 +212,10 @@ src/agent_truth_lab/
   agent/         loop.py  missions.py                raw tool-calling loop + 40 missions
   verification/  verifier.py  arms.py  recovery.py   the four arms
   harness/       runner.py  metrics.py  report.py    execution, metrics, charts
-                 rescore.py                          offline re-scoring / sensitivity
-tests/                                               163 tests
+                 rescore.py  compare.py              offline re-scoring, model comparison
+tests/                                               182 tests
 results/                                             run JSON (gitignored) + charts (committed)
+                                                      per-model prefix when comparing models
 findings.md                                          numbers, auto-filled by the report step
 experiment-log.md                                    design decisions, dated
 ```
@@ -161,14 +225,20 @@ experiment-log.md                                    design decisions, dated
 - The LLM is the only stochastic component. Everything downstream of a recorded episode —
   injection, verification, metrics, recovery — is deterministic and replayable from the run
   JSON, which stores full trajectories and the post-episode database dump.
-- Seeds vary the *data* (which orders, which amounts), not the mission *structure*, so the
-  near-zero variance across seeds means the effect is robust to data variation — it is not
-  evidence of a wider distribution having been sampled.
+- Task mix and injection assignment are now drawn from the seed
+  (`structural_variance: true`), so cross-seed spread reflects genuine variation in which
+  missions ran, not just which orders happened to be selected. Set it to `false` to
+  reproduce the original fixed 40-mission set.
 - Ground truth is scoped to each mission's declared assertions plus the global invariants,
-  which gives the verifier a measurable blind spot of **2.5%** (quantified in the
-  sensitivity table above). The project reports that number rather than quietly benefiting
-  from the narrower definition.
+  which gives the verifier a structural blind spot — quantified at 2.5% in one run, 0% in
+  another, because it depends on which archetype/injection combination a seed happens to
+  draw (see the sensitivity section above). The project reports both runs rather than the
+  more flattering one.
 - Because verification is pure and every episode's post-run database snapshot is stored,
-  any run can be re-judged from disk under a different definition of correctness without
-  calling the model again. `atl-rescore` is that path, and it is how the sensitivity table
-  is produced.
+  any run can be re-judged from disk under a different definition of correctness, or
+  compared across models, without calling the model again. `atl-rescore` and `atl-compare`
+  are that path.
+- The two-model comparison is **n=1 per tier, same model family**. "Capability didn't move
+  the number" is evidence for a ceiling in this specific design (fully-specified missions,
+  a tool surface with no independent read path), not a universal claim about all agents at
+  all capability levels.

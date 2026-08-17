@@ -20,6 +20,8 @@ expected_state semantics (evaluated by the M4 verifier):
 
 from __future__ import annotations
 
+import dataclasses
+import random
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,6 +57,10 @@ class Mission:
     instruction: str
     assertions: tuple[Assertion, ...]
     injection: dict[str, str] = field(default_factory=dict)
+    # Set by the structural-variance builder. Carried as a field rather than
+    # parsed back out of mission_id, which is ambiguous once mode names contain
+    # underscores (crash_after_side_effect).
+    archetype: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +68,7 @@ class Mission:
             "instruction": self.instruction,
             "assertions": [a.to_dict() for a in self.assertions],
             "injection": dict(self.injection),
+            "archetype": self.archetype,
         }
 
     @classmethod
@@ -71,6 +78,7 @@ class Mission:
             instruction=data["instruction"],
             assertions=tuple(Assertion.from_dict(a) for a in data["assertions"]),
             injection=dict(data["injection"]),
+            archetype=data.get("archetype", ""),
         )
 
 
@@ -368,13 +376,37 @@ def _status_update(
 # ---------------------------------------------------------------------------
 
 
-def build_missions(conn: sqlite3.Connection) -> list[Mission]:
-    """Build the full mission set from a freshly seeded environment.
+def build_missions(
+    conn: sqlite3.Connection,
+    seed: int | None = None,
+    structural_variance: bool = False,
+) -> list[Mission]:
+    """Build the mission set for a run.
 
-    The connection must hold a fresh seed for the run's seed value — episodes
-    re-seed identically, so entity references stay valid. Deterministic:
-    identical seeds produce identical missions.
+    Two generation modes:
+
+    - **fixed** (default): the hand-authored 40-mission set. Seeds vary which
+      entities appear but not the archetype/injection structure, so cross-seed
+      variance measures robustness to data, not to task mix. This is what the
+      published v1 numbers were produced with, and it stays the default so
+      those numbers remain reproducible.
+    - **structural variance** (`structural_variance=True`): archetype choice,
+      which missions are injected, and which mode lands on which tool are all
+      drawn from the seed, subject to the same coverage constraints (40
+      missions, 15 clean, every failure mode at least 3 times). Cross-seed
+      spread then reflects genuine task-mix variation.
+
+    Deterministic either way: identical seeds produce identical missions.
     """
+    if structural_variance:
+        if seed is None:
+            raise ValueError("structural variance requires a seed")
+        return _varied_mission_set(conn, seed)
+    return _fixed_mission_set(conn)
+
+
+def _fixed_mission_set(conn: sqlite3.Connection) -> list[Mission]:
+    """The hand-authored 40-mission set (v1)."""
     delivered = [
         row["id"]
         for row in conn.execute("SELECT id FROM orders WHERE status = 'delivered' ORDER BY id")
@@ -521,4 +553,135 @@ def build_missions(conn: sqlite3.Connection) -> list[Mission]:
     ids = [m.mission_id for m in missions]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate mission ids in the mission set")
+    return missions
+
+
+# ---------------------------------------------------------------------------
+# structural variance
+# ---------------------------------------------------------------------------
+
+# Which tools each archetype actually calls. A mode can only be injected into a
+# tool the mission uses, or the injection would be a no-op and the mission would
+# quietly become a clean one.
+ARCHETYPE_TOOLS: dict[str, tuple[str, ...]] = {
+    "refund_full": ("issue_refund", "send_customer_email"),
+    "refund_partial": ("issue_refund",),
+    "retry_funded": ("retry_subscription_charge", "send_customer_email"),
+    "retry_declined": ("retry_subscription_charge",),
+    "settlement": ("create_settlement",),
+    "cancel_refund": ("update_order_status", "issue_refund", "send_customer_email"),
+    "status_update": ("update_order_status", "send_customer_email"),
+}
+ARCHETYPES = tuple(ARCHETYPE_TOOLS)
+
+# partial_completion is only meaningful on a genuinely multi-step tool.
+_MULTI_STEP = ("issue_refund", "retry_subscription_charge")
+
+MIN_PER_MODE = 3
+MIN_PER_ARCHETYPE = 2
+
+
+def _compatible_tools(archetype: str, mode: str) -> tuple[str, ...]:
+    tools = ARCHETYPE_TOOLS[archetype]
+    if mode == "partial_completion":
+        return tuple(t for t in tools if t in _MULTI_STEP)
+    return tools
+
+
+def _plan_structure(rng: random.Random) -> list[tuple[str, dict[str, str]]]:
+    """Draw 40 (archetype, injection) pairs honouring the coverage floors."""
+    from agent_truth_lab.injection.modes import FailureMode
+
+    modes = [m.value for m in FailureMode]
+
+    # 25 injected slots: every mode at least MIN_PER_MODE times, remainder free.
+    mode_slots = [m for m in modes for _ in range(MIN_PER_MODE)]
+    while len(mode_slots) < INJECTED_MISSION_COUNT:
+        mode_slots.append(rng.choice(modes))
+    rng.shuffle(mode_slots)
+
+    injected: list[tuple[str, dict[str, str]]] = []
+    for mode in mode_slots:
+        eligible = [a for a in ARCHETYPES if _compatible_tools(a, mode)]
+        archetype = rng.choice(eligible)
+        tool = rng.choice(_compatible_tools(archetype, mode))
+        injected.append((archetype, {tool: mode}))
+
+    # 15 clean slots, with a floor on archetype coverage so a seed cannot
+    # produce a set that is (say) entirely refunds.
+    clean_archetypes: list[str] = []
+    for archetype in ARCHETYPES:
+        present = sum(1 for a, _ in injected if a == archetype)
+        clean_archetypes.extend([archetype] * max(0, MIN_PER_ARCHETYPE - present))
+    while len(clean_archetypes) < CLEAN_MISSION_COUNT:
+        clean_archetypes.append(rng.choice(ARCHETYPES))
+    rng.shuffle(clean_archetypes)
+    clean_archetypes = clean_archetypes[:CLEAN_MISSION_COUNT]
+
+    plan = injected + [(a, {}) for a in clean_archetypes]
+    rng.shuffle(plan)
+    return plan
+
+
+def _varied_mission_set(conn: sqlite3.Connection, seed: int) -> list[Mission]:
+    """Draw archetypes, injections, and entities from the seed."""
+    # A stream distinct from the one that seeded the environment, so mission
+    # structure is not correlated with the data it runs against.
+    rng = random.Random(seed * 7919 + 13)
+
+    delivered = [
+        row["id"]
+        for row in conn.execute("SELECT id FROM orders WHERE status = 'delivered' ORDER BY id")
+    ]
+    placed = [
+        row["id"]
+        for row in conn.execute("SELECT id FROM orders WHERE status = 'placed' ORDER BY id")
+    ]
+    funded = conn.execute(
+        "SELECT s.* FROM subscriptions s JOIN customers c ON c.id = s.customer_id"
+        " WHERE s.status = 'past_due' AND c.balance_paise >= s.amount_paise ORDER BY s.id"
+    ).fetchall()
+    underfunded = conn.execute(
+        "SELECT s.* FROM subscriptions s JOIN customers c ON c.id = s.customer_id"
+        " WHERE s.status = 'past_due' AND c.balance_paise < s.amount_paise ORDER BY s.id"
+    ).fetchall()
+    days = ("2025-12-30", "2025-12-31")
+
+    if not (delivered and placed and funded and underfunded):
+        raise ValueError("seeded environment lacks the entities the archetypes need")
+
+    missions: list[Mission] = []
+    for index, (archetype, injection) in enumerate(_plan_structure(rng), start=1):
+        label = next(iter(injection.values()), "clean")
+        mission_id = f"m{index:02d}_{archetype}_{label}"
+
+        if archetype == "refund_full":
+            mission = _refund_full(conn, rng.choice(delivered), mission_id, injection)
+        elif archetype == "refund_partial":
+            mission = _refund_partial(conn, rng.choice(delivered), mission_id, injection)
+        elif archetype == "retry_funded":
+            mission = _retry_charge(
+                conn, rng.choice(funded), mission_id, injection, funded=True
+            )
+        elif archetype == "retry_declined":
+            mission = _retry_charge(
+                conn, rng.choice(underfunded), mission_id, injection, funded=False
+            )
+        elif archetype == "settlement":
+            mission = _settlement(
+                conn, rng.choice(days), rng.random() < 0.5, mission_id, injection
+            )
+        elif archetype == "cancel_refund":
+            mission = _cancel_and_refund(
+                conn, rng.choice(delivered), mission_id, injection
+            )
+        else:  # status_update
+            mission = _status_update(conn, rng.choice(placed), mission_id, injection)
+        missions.append(dataclasses.replace(mission, archetype=archetype))
+
+    for mission in missions:
+        validate_plan(mission.injection)
+    ids = [m.mission_id for m in missions]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate mission ids in the varied mission set")
     return missions
