@@ -204,6 +204,14 @@ class EpisodeRecord:
 
 
 def _serialize_block(block: Any) -> dict[str, Any]:
+    """Round-trip a response block into a message-parameter dict.
+
+    Thinking blocks must be passed back to the API *unchanged* — they carry a
+    signature, and a reconstructed or stripped block is rejected. So anything
+    that is not plain text or a tool call is dumped in full rather than
+    summarized to its type. (Test fakes are plain objects without model_dump;
+    they fall through to the minimal form.)
+    """
     if block.type == "text":
         return {"type": "text", "text": block.text}
     if block.type == "tool_use":
@@ -213,6 +221,9 @@ def _serialize_block(block: Any) -> dict[str, Any]:
             "name": block.name,
             "input": dict(block.input),
         }
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        return {k: v for k, v in dump().items() if v is not None}
     return {"type": block.type}
 
 

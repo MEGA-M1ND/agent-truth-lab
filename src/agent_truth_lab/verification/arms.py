@@ -207,6 +207,9 @@ class EpisodeEvaluation:
     usage_output_tokens: int = 0
     episode_latency_seconds: float = 0.0
     crashed: bool = False
+    # The episode ended because the API call failed, not because of anything
+    # the experiment was testing.
+    api_error: bool = False
 
     @property
     def ground_truth_satisfied(self) -> bool | None:
@@ -283,4 +286,5 @@ def evaluate_episode(
         usage_output_tokens=record.get("usage_output_tokens", 0),
         episode_latency_seconds=record.get("latency_seconds", 0.0),
         crashed=record.get("crashed", False),
+        api_error=record.get("stop_reason") == "api_error",
     )

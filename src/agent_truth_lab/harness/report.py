@@ -478,23 +478,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--summary", type=Path, help="path to summary_<stamp>.json")
     parser.add_argument("--results", type=Path, default=RESULTS_DIR)
     parser.add_argument("--findings", type=Path, default=REPO_ROOT / "findings.md")
+    parser.add_argument(
+        "--prefix",
+        default="",
+        help="prefix for output filenames; required when rendering more than one"
+        " model into the same directory, otherwise each run overwrites the last",
+    )
     args = parser.parse_args(argv)
 
     summary_path = args.summary or newest_summary(args.results)
     summary = load_summary(summary_path)
     print(f"reading {summary_path.name}")
 
+    prefix = args.prefix
     outputs = []
     for theme in (LIGHT, DARK):
         outputs.append(
             headline_chart(
                 summary, theme,
-                args.results / f"headline_false_success_rate{theme.suffix}.png",
+                args.results / f"{prefix}headline_false_success_rate{theme.suffix}.png",
             )
         )
         outputs.append(
             heatmap_chart(
-                summary, theme, args.results / f"heatmap_arm_by_mode{theme.suffix}.png"
+                summary,
+                theme,
+                args.results / f"{prefix}heatmap_arm_by_mode{theme.suffix}.png",
             )
         )
     stamp = summary_path.stem.replace("summary_", "")

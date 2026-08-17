@@ -128,8 +128,98 @@ property the recording format was designed for.
 
 The default remains frame-scoped, so the reported headline is the conservative one.
 
-### Remaining known limitation
+### Remaining known limitation (addressed in M7)
 
 Seeds vary the data, not the mission structure, so cross-seed variance is near zero. Adding
 structural variance (randomized archetype mix and injection assignment per seed) would need
 a re-run and would break comparability with this run's numbers — a good M7, not a patch.
+
+## 2026-08-17 — M7 structural variance and a second model
+
+Two changes, run together because both require a fresh run and neither is comparable with
+the v1 numbers.
+
+**Structural variance.** `build_missions(..., structural_variance=True)` now draws the
+archetype mix, which missions are injected, and which mode lands on which tool from the
+seed, subject to unchanged coverage floors (40 missions, 15 clean, every mode at least 3
+times, and injection only into a tool the mission actually calls — injecting elsewhere
+would be a silent no-op that quietly turns an injected mission into a clean one). The fixed
+v1 set remains the default so the published v1 numbers stay reproducible; a test asserts
+that.
+
+Effect on Haiku, the point of the exercise:
+
+| | Arm A false success |
+|---|---------------------|
+| v1, fixed missions | 52.5% [52.5, 52.5] — no spread |
+| v2, varied task mix | 49.2% [45.0, 55.0] — per-seed 55.0 / 45.0 / 47.5 |
+
+The central estimate barely moved while the interval became real. That is the desired
+outcome: the finding survived, and the uncertainty is now visible rather than hidden by a
+constant task mix.
+
+**A second capability tier.** `models:` in the config takes a list, and the runner tags
+outputs per model, so comparing tiers is a config change rather than a code change. The
+question it answers — does a more capable agent overclaim less? — is the one the
+single-model result raises but cannot settle.
+
+**Harness fixes this shook out.**
+
+- Thinking blocks must round-trip to the API unchanged; the response serializer was
+  summarizing every non-text, non-tool block to its bare `type`, which would have been
+  rejected the first time a thinking-enabled model was used. Now dumped in full.
+- Sampling parameters are omitted entirely (Claude Sonnet 5 rejects non-default values),
+  so each model runs at its own default rather than under a per-model configuration
+  confound.
+
+### Data integrity: an overnight suspend contaminated a seed
+
+The machine slept mid-run. Seed 43 of the first Haiku run spanned the suspend and came back
+with **8 of 40 episodes ending in `Connection error.`**; seeds 42 and 44 were clean. Those
+episodes are infrastructure noise, not evidence about agent truthfulness — an episode the
+agent never got to finish says nothing about whether it would have overclaimed — so that
+run was discarded and Haiku re-run.
+
+The harness now counts `api_error` episodes as their own metric and the runner prints an
+explicit warning naming the count and telling the operator to re-run affected seeds before
+publishing. Previously such an episode silently became a violated-expected-state episode,
+which would have depressed Arm A's false-success rate for a reason that has nothing to do
+with the experiment.
+
+v1 artifacts moved to `results/v1/` so the comparison tool cannot mix fixed-mission and
+varied-mission runs into a single invalid chart.
+
+### Final v2 results (both models, seeds 42/43/44, structural variance on)
+
+| Arm | `claude-haiku-4-5` | `claude-sonnet-5` |
+|-----|---------------------|---------------------|
+| A — self-report | 50.8% [47.5, 55.0] | 50.8% [47.5, 55.0] |
+| B — tool responses | 39.2% [35.0, 42.5] | 39.2% [35.0, 42.5] |
+| C — state verifier | 0.0% | 0.0% |
+| D — verifier + recovery | 0.0% | 0.0% |
+
+Recovery: 48/66 auto-recovered (72.7%), 18 escalated, 0 damaged. 66/120 episodes ended in a
+violated expected_state.
+
+**The two models are identical on every arm to the decimal point** — not a bug: verified
+that db_dumps match only because the mission instructions are fully specified (exact order
+IDs, exact amounts), while the actual model behavior is genuinely distinct (7/120 episodes
+have different tool-call sequences; Sonnet uses 35% more output tokens). The classified
+outcome converges anyway, on all 120 episodes, because the failure modes are constructed so
+the tool response carries no signal a smarter model could reason better about — there is
+nothing in a fabricated 200 or a wrong-target write that distinguishes it from a real
+success at the response layer. Read as evidence for a capability ceiling specific to this
+design (fully-specified missions, no independent read tool), not a universal claim.
+
+**The sensitivity re-run on this data found 0 blind-spot episodes**, versus 2.5% on the
+prior fixed-mission run. Checked rather than assumed: this run's random seed draw did not
+happen to produce the specific archetype/injection combination (`update_order_status`
+wrong-target inside a `cancel_refund` mission) that caused the earlier blind spot — every
+wrong-target case in this run damaged a row some assertion actually checks. The blind spot
+is a structural property of frame-scoped verification, not a fixed percentage; both runs are
+reported rather than the more flattering one.
+
+**Data-integrity incident, documented for the record.** The machine slept mid-run once
+during this milestone (see above); the affected seed was discarded and Haiku re-run clean
+(0/120 api_errors, confirmed). No published number in this log or the README comes from the
+contaminated run.
