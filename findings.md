@@ -2,6 +2,8 @@
 
 Model under test: `claude-haiku-4-5` · seeds [42, 43, 44] · 120 episodes (40 missions x 3 seeds).
 
+This file covers the reference run above: one model, no interventions. For the full cross-experiment story — a second model, a read tool, and explicit conflict-resolution prompting — see the [README](README.md#does-a-more-capable-agent-overclaim-less).
+
 ![False success rate by arm](results/headline_false_success_rate.png)
 
 ## Headline — false success rate by arm
@@ -59,6 +61,10 @@ Model under test: `claude-haiku-4-5` · seeds [42, 43, 44] · 120 episodes (40 m
 - The agent is the only stochastic component; every measurement downstream
   of a recorded episode is deterministic and replayable from the run JSON.
 
-## Notes
+## Related experiments
 
-<!-- Narrative interpretation goes here. -->
+- **Model comparison** (`atl-compare`) — does a more capable model overclaim less? See the README's model-comparison section.
+- **Read-tool intervention** (`atl-readtools-report`) — does giving the agent a way to check its own writes close the gap?
+- **Conflict-resolution prompting** — does explicitly instructing the agent to trust a read over an earlier write's claimed success close it further?
+
+Regenerate this file with `atl-report`.
