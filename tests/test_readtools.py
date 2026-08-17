@@ -239,6 +239,44 @@ def test_before_after_chart_handles_a_real_reduction(tmp_path):
     assert out.exists() and out.stat().st_size > 5_000
 
 
+def test_conditions_chart_renders_three_conditions(tmp_path):
+    no_tools = {"claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.508)}
+    with_reads = {"claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.508)}
+    with_resolve = {"claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.0)}
+    out = tmp_path / "three.png"
+
+    readtools.conditions_chart(
+        [("no read tools", no_tools), ("with read tools", with_reads),
+         ("+ resolve conflicts", with_resolve)],
+        readtools.LIGHT, out,
+    )
+
+    assert out.exists() and out.stat().st_size > 5_000
+
+
+def test_conditions_chart_excludes_models_missing_from_any_condition():
+    """A model absent from one condition is dropped, not plotted with a gap."""
+    cond_a = {
+        "claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.5),
+        "claude-sonnet-5": make_summary("claude-sonnet-5", 0.3),
+    }
+    cond_b = {"claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.4)}  # no sonnet
+
+    models = [m for m in cond_a if all(m in s for _, s in [("a", cond_a), ("b", cond_b)])]
+    assert models == ["claude-haiku-4-5"]
+
+
+def test_before_after_chart_is_a_two_condition_wrapper(tmp_path):
+    """before_after_chart must delegate to conditions_chart, not diverge from it."""
+    no_tools = {"claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.5)}
+    with_reads = {"claude-haiku-4-5": make_summary("claude-haiku-4-5", 0.35)}
+    out = tmp_path / "wrapper.png"
+
+    readtools.before_after_chart(no_tools, with_reads, readtools.LIGHT, out)
+
+    assert out.exists() and out.stat().st_size > 5_000
+
+
 def test_cli_skips_chart_when_no_baseline_matches(tmp_path, capsys):
     results_dir = tmp_path / "readtools"
     results_dir.mkdir()

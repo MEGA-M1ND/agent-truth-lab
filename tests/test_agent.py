@@ -425,6 +425,41 @@ def test_read_tools_included_when_opted_in(mission_set):
     sent_tools = {t["name"] for t in client.requests[0]["tools"]}
     assert {t["name"] for t in loop.READ_TOOL_SCHEMAS} <= sent_tools
     assert loop.READ_TOOLS_ADDENDUM in client.requests[0]["system"]
+    assert loop.CONFLICT_RESOLUTION_ADDENDUM not in client.requests[0]["system"]
+
+
+def test_resolve_conflicts_appends_the_instruction(mission_set):
+    mission = find_mission(mission_set, "m12_settlement_clean")
+    client = FakeClient([fake_response([text_block("TASK_COMPLETE: done")], "end_turn")])
+
+    loop.run_episode(
+        mission, SEED, "fake-model", client,
+        include_read_tools=True, resolve_conflicts=True,
+    )
+
+    system = client.requests[0]["system"]
+    assert loop.READ_TOOLS_ADDENDUM in system
+    assert loop.CONFLICT_RESOLUTION_ADDENDUM in system
+    # the conflict instruction must come after the read-tools addendum
+    assert system.index(loop.READ_TOOLS_ADDENDUM) < system.index(
+        loop.CONFLICT_RESOLUTION_ADDENDUM
+    )
+
+
+def test_resolve_conflicts_without_read_tools_has_no_effect(mission_set):
+    """The instruction is meaningless without a read channel to act on."""
+    mission = find_mission(mission_set, "m12_settlement_clean")
+    client = FakeClient([fake_response([text_block("TASK_COMPLETE: done")], "end_turn")])
+
+    loop.run_episode(
+        mission, SEED, "fake-model", client,
+        include_read_tools=False, resolve_conflicts=True,
+    )
+
+    system = client.requests[0]["system"]
+    assert loop.CONFLICT_RESOLUTION_ADDENDUM not in system
+    sent_tools = {t["name"] for t in client.requests[0]["tools"]}
+    assert sent_tools.isdisjoint({t["name"] for t in loop.READ_TOOL_SCHEMAS})
 
 
 def test_agent_can_call_a_read_tool_and_it_reaches_the_injector(mission_set):

@@ -283,3 +283,55 @@ framing would have missed entirely. `atl-readtools-report` reproduces the split 
 + self-verification blind rate) from stored runs offline.
 
 229 tests (was 208 going into this milestone), ruff clean.
+
+## 2026-08-17 — M9: is the blindness a prompting gap, or something harder?
+
+Direct follow-up to M8: the read-tools prompt told the agent to check its work but never
+said what to do if the check *disagreed* with what it already believed. Isolating that as
+its own variable answers the question M8 left open — is "willingness to act on a
+contradiction" fixable by simply telling the model, or is it a harder limitation?
+
+**What changed.** One new sentence, appended only when `resolve_conflicts=True` (which
+implies `read_tools=True` — the instruction is meaningless without something to read):
+*"If a read tool's result conflicts with what an earlier write response claimed... trust the
+read... Do not report success based on a write response that a subsequent read has
+contradicted."* Wired through `RunConfig.resolve_conflicts`, `--resolve-conflicts` CLI flag,
+and `loop.run_episode(resolve_conflicts=...)`. `readtools.before_after_chart` was
+generalized into `conditions_chart` (N labeled conditions, not just 2), backward-compatible
+via a thin wrapper — needed for the 3-way comparison below and reusable for consolidation.
+
+**The 8-mission pilot was misleading, and is reported as such rather than quietly
+corrected.** On a pilot sample, Haiku's Arm A false success rate dropped to 0% — the two
+episodes that had actually failed (F1 silent-noop, F2 wrong-target) were both caught,
+including a concrete case where Haiku called `get_settlement` twice, noticed the write's
+claimed success didn't persist, and correctly reported `TASK_FAILED` with an accurate
+diagnosis. That was promising enough to justify the full paid run, but the full 120-episode
+result did not hold at 0% — see below. The lesson, not new to this project but reconfirmed:
+an 8-mission sample is not a substitute for the full run, and a result that looks too good
+gets the full run before it gets a headline.
+
+**Full run** (same 120 episodes as M7/M8, only the condition changes): zero `api_errors` on
+both models (validated before trusting anything).
+
+| | `claude-haiku-4-5` | `claude-sonnet-5` |
+|---|---|---|
+| Arm A, no read tools | 50.8% [47.5, 55.0] | 50.8% [47.5, 55.0] |
+| Arm A, read tools (M8) | 50.8% — unchanged | 35.8% [30.0, 40.0] |
+| Arm A, read tools + trust-the-read instruction | **42.5%** [40.0, 47.5] | **24.2%** [22.5, 25.0] |
+| Read tool usage rate | 52.5% (was 48.3%) | 90.8% (unchanged) |
+| Self-verification blind rate | 100% → **69.7%** | 76.8% → **49.2%** |
+
+Cost: Haiku $1.05, Sonnet $5.51.
+
+**Reading.** Both models improve, proportionally similarly (blind rate drops by roughly a
+third for both), and neither approaches zero — Sonnet still self-reports success on 1 in 4
+episodes it read the true failure state for, *after* being told in plain language what to do
+about exactly that situation. This sits between the two simple hypotheses: a pure
+prompting-gap story predicts the instruction drives the blind rate to ~0 (it doesn't); a
+pure capability-ceiling story predicts the instruction does ~nothing (it does something
+substantial). The result: prompting narrows this gap, it does not close it — evidence for a
+real, partially-remediable limitation in how these models weigh a fresh contradictory
+observation against an already-formed conclusion, not a missing sentence in the system
+prompt.
+
+242 tests (was 229), ruff clean. Total project spend to date: roughly $17.
