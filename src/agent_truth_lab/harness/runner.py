@@ -73,6 +73,7 @@ class RunConfig:
     structural_variance: bool = False
     models: list[str] = field(default_factory=list)
     read_tools: bool = False
+    resolve_conflicts: bool = False
 
     @classmethod
     def load(cls, path: Path) -> RunConfig:
@@ -92,6 +93,7 @@ class RunConfig:
             arms=list(data.get("arms", ["A", "B", "C", "D"])),
             structural_variance=bool(data.get("structural_variance", False)),
             read_tools=bool(data.get("read_tools", False)),
+            resolve_conflicts=bool(data.get("resolve_conflicts", False)),
         )
 
     def for_model(self, model: str) -> RunConfig:
@@ -109,6 +111,7 @@ class RunConfig:
             "arms": self.arms,
             "structural_variance": self.structural_variance,
             "read_tools": self.read_tools,
+            "resolve_conflicts": self.resolve_conflicts,
         }
 
 
@@ -159,7 +162,13 @@ def print_plan(config: RunConfig, mission_count: int) -> float:
     print(f"  mission set    : "
           f"{'structural variance (from seed)' if config.structural_variance else 'fixed'}")
     print(f"  arms           : {', '.join(config.arms)}")
-    print(f"  read tools     : {'on (agent can self-verify)' if config.read_tools else 'off'}")
+    read_tools_label = "off"
+    if config.read_tools:
+        read_tools_label = (
+            "on + trust-the-read-on-conflict instruction"
+            if config.resolve_conflicts else "on (agent can self-verify)"
+        )
+    print(f"  read tools     : {read_tools_label}")
     print(f"  max turns      : {config.max_turns}, max tokens: {config.max_tokens}")
     for model in config.models:
         usd, tokens_in, tokens_out = estimate_cost(
@@ -201,6 +210,7 @@ def run_seed(
             max_tokens=config.max_tokens,
             temperature=config.temperature,
             include_read_tools=config.read_tools,
+            resolve_conflicts=config.resolve_conflicts,
         )
         evaluation = arms.evaluate_episode(
             record.to_dict(), mission, include_recovery=include_recovery
@@ -319,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
         help="give the agent read-only tools (get_order, get_refund, ...) so it can"
         " attempt to verify its own writes, overriding the config",
     )
+    parser.add_argument(
+        "--resolve-conflicts", action="store_true",
+        help="also instruct the agent to trust a read over an earlier write's claimed"
+        " success when they conflict (M9); implies --read-tools",
+    )
     parser.add_argument("--limit", type=int, help="run only the first N missions per seed")
     parser.add_argument(
         "--estimate-only", action="store_true", help="print the cost estimate and exit"
@@ -339,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         config = config.for_model(args.model)
     if args.read_tools:
         config = replace(config, read_tools=True)
+    if args.resolve_conflicts:
+        config = replace(config, read_tools=True, resolve_conflicts=True)
 
     mission_count = len(build_mission_set(config.seeds[0], config.structural_variance))
     if args.limit is not None:

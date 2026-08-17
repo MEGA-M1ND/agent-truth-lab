@@ -194,39 +194,48 @@ def load_summaries_by_model(results_dir: Path) -> dict[str, dict[str, Any]]:
     return summaries
 
 
-# Categorical slots 1 (blue) and 2 (orange) of the validated palette — "no
-# verification channel available" vs "given a read tool". This is the same
-# hue pair compare.py uses for models; here it encodes a different variable
-# (tool access), which is why it is not reused as a shared constant.
-CONDITION_COLORS_LIGHT = ("#2a78d6", "#eb6834")
-CONDITION_COLORS_DARK = ("#3987e5", "#d95926")
+# Categorical slots 1-3 (blue, orange, aqua) of the validated palette — the
+# palette's own documentation certifies these three for all-pairs comparison
+# charts (grouped bars need every pair distinguishable, not just neighbors).
+# This is a different hue pair/triple than compare.py's, which encodes model
+# identity; here the same slots encode a condition (tool access), so it is
+# not reused as a shared constant.
+CONDITION_COLORS_LIGHT = ("#2a78d6", "#eb6834", "#1baf7a")
+CONDITION_COLORS_DARK = ("#3987e5", "#d95926", "#199e70")
 
 
-def before_after_chart(
-    baseline: dict[str, dict[str, Any]],
-    with_read_tools: dict[str, dict[str, Any]],
+def conditions_chart(
+    conditions: list[tuple[str, dict[str, dict[str, Any]]]],
     theme: Theme,
     out_path: Path,
+    title: str = "Does a read tool close the gap?",
+    subtitle: str = (
+        "Arm A (agent self-report) false success rate, same missions,"
+        " only the condition varies"
+    ),
 ) -> Path:
-    """Grouped bars: Arm A false success rate, no-tools vs read-tools, per model."""
-    models = [m for m in baseline if m in with_read_tools]
-    colors = CONDITION_COLORS_LIGHT if theme.name == "light" else CONDITION_COLORS_DARK
+    """Grouped bars: Arm A false success rate, N conditions per model.
 
-    fig, ax = plt.subplots(figsize=(9.5, 4.6), facecolor=theme.surface)
-    bar_height = 0.32
-    for index, (label, summaries, color) in enumerate(
-        [
-            ("no read tools", baseline, colors[0]),
-            ("with read tools", with_read_tools, colors[1]),
-        ]
-    ):
+    `conditions` is an ordered list of (label, summaries_by_model) — summaries
+    as returned by load_summaries_by_model. Models are the intersection
+    across every condition, so a model missing one condition's run is
+    silently excluded rather than plotted with a hole.
+    """
+    models = [m for m in conditions[0][1] if all(m in summaries for _, summaries in conditions)]
+    colors = CONDITION_COLORS_LIGHT if theme.name == "light" else CONDITION_COLORS_DARK
+    n = len(conditions)
+
+    fig, ax = plt.subplots(figsize=(9.5, 3.6 + 1.1 * len(models)), facecolor=theme.surface)
+    bar_height = min(0.8 / n, 0.32)
+    for index, (label, summaries) in enumerate(conditions):
+        color = colors[index % len(colors)]
         means = [summaries[m]["summary"]["arms"]["A"]["false_success_rate"]["mean"]
                  for m in models]
         lows = [summaries[m]["summary"]["arms"]["A"]["false_success_rate"]["min"]
                 for m in models]
         highs = [summaries[m]["summary"]["arms"]["A"]["false_success_rate"]["max"]
                  for m in models]
-        offsets = [i + (index - 0.5) * bar_height for i in range(len(models))]
+        offsets = [i + (index - (n - 1) / 2) * bar_height for i in range(len(models))]
         errors = [
             [max(0.0, m - lo) for m, lo in zip(means, lows, strict=True)],
             [max(0.0, hi - m) for m, hi in zip(means, highs, strict=True)],
@@ -240,7 +249,7 @@ def before_after_chart(
         for offset, mean, high in zip(offsets, means, highs, strict=True):
             ax.text(
                 max(mean, high) + 0.02, offset, f"{mean:.0%}",
-                va="center", ha="left", fontsize=10, fontweight="bold",
+                va="center", ha="left", fontsize=9.5, fontweight="bold",
                 color=theme.text_primary,
             )
 
@@ -254,20 +263,32 @@ def before_after_chart(
     _style(ax, theme)
 
     ax.set_title(
-        "Does a read tool close the gap?",
-        fontsize=14, fontweight="bold", color=theme.text_primary, loc="left", pad=32,
+        title, fontsize=14, fontweight="bold", color=theme.text_primary, loc="left", pad=32,
     )
-    ax.text(
-        0, 1.035,
-        "Arm A (agent self-report) false success rate, same missions, only tool access varies",
-        transform=ax.transAxes, fontsize=9.5, color=theme.text_secondary,
-    )
+    ax.text(0, 1.035, subtitle, transform=ax.transAxes, fontsize=9.5,
+            color=theme.text_secondary)
     ax.legend(loc="lower right", frameon=False, fontsize=9.5, labelcolor=theme.text_secondary)
 
-    fig.subplots_adjust(left=0.16, right=0.97, top=0.80, bottom=0.12)
+    fig.subplots_adjust(left=0.16, right=0.97, top=0.78, bottom=0.12)
     fig.savefig(out_path, dpi=200, facecolor=theme.surface)
     plt.close(fig)
     return out_path
+
+
+def before_after_chart(
+    baseline: dict[str, dict[str, Any]],
+    with_read_tools: dict[str, dict[str, Any]],
+    theme: Theme,
+    out_path: Path,
+) -> Path:
+    """Grouped bars: Arm A false success rate, no-tools vs read-tools, per model.
+
+    Thin wrapper over conditions_chart for the 2-condition case.
+    """
+    return conditions_chart(
+        [("no read tools", baseline), ("with read tools", with_read_tools)],
+        theme, out_path,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
