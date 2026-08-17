@@ -3,6 +3,17 @@
 Dated record of design decisions and runs. Maintained by the architect; entries below
 were written as each milestone landed.
 
+- [M1 environment](#2026-08-16--m1-environment)
+- [M2 injection](#2026-08-16--m2-injection)
+- [M3 agent loop and missions](#2026-08-16--m3-agent-loop-and-missions)
+- [M4 arms A–C and metrics](#2026-08-16--m4-arms-ac-and-metrics)
+- [M5 Arm D recovery](#2026-08-16--m5-arm-d-recovery)
+- [M6 full run](#2026-08-16--m6-full-run)
+- [M6a sensitivity analysis](#2026-08-16--m6a-sensitivity-analysis-resolves-the-open-decision)
+- [M7 structural variance and a second model](#2026-08-17--m7-structural-variance-and-a-second-model)
+- [M8 read-tool experiment](#2026-08-17--m8-read-tool-experiment-does-self-verification-catch-the-lie)
+- [M9 is the blindness a prompting gap, or something harder?](#2026-08-17--m9-is-the-blindness-a-prompting-gap-or-something-harder)
+
 ## 2026-08-16 — M1 environment
 
 - Business invariants are enforced **only in code**, never as SQL CHECK constraints: the
