@@ -398,3 +398,76 @@ def test_episode_record_serializes(mission_set):
     record = loop.run_episode(mission, SEED, "fake-model", client)
     payload = json.dumps(record.to_dict())
     assert '"m12_settlement_clean"' in payload
+
+
+# ---------------------------------------------------------------------------
+# read tools (M7)
+# ---------------------------------------------------------------------------
+
+
+def test_read_tools_excluded_by_default(mission_set):
+    mission = find_mission(mission_set, "m12_settlement_clean")
+    client = FakeClient([fake_response([text_block("TASK_COMPLETE: done")], "end_turn")])
+
+    loop.run_episode(mission, SEED, "fake-model", client)
+
+    sent_tools = {t["name"] for t in client.requests[0]["tools"]}
+    assert sent_tools.isdisjoint({t["name"] for t in loop.READ_TOOL_SCHEMAS})
+    assert loop.READ_TOOLS_ADDENDUM not in client.requests[0]["system"]
+
+
+def test_read_tools_included_when_opted_in(mission_set):
+    mission = find_mission(mission_set, "m12_settlement_clean")
+    client = FakeClient([fake_response([text_block("TASK_COMPLETE: done")], "end_turn")])
+
+    loop.run_episode(mission, SEED, "fake-model", client, include_read_tools=True)
+
+    sent_tools = {t["name"] for t in client.requests[0]["tools"]}
+    assert {t["name"] for t in loop.READ_TOOL_SCHEMAS} <= sent_tools
+    assert loop.READ_TOOLS_ADDENDUM in client.requests[0]["system"]
+
+
+def test_agent_can_call_a_read_tool_and_it_reaches_the_injector(mission_set):
+    """An agent-issued get_order call flows through the loop exactly like a write."""
+    mission = find_mission(mission_set, "m01_refund_full_clean")
+    order_id = next(a for a in mission.assertions if a.table == "orders").where["id"]
+
+    client = FakeClient(
+        [
+            fake_response(
+                [tool_block("tu_1", "get_order", {"order_id": order_id})], "tool_use"
+            ),
+            fake_response([text_block("TASK_COMPLETE: checked first.")], "end_turn"),
+        ]
+    )
+
+    record = loop.run_episode(
+        mission, SEED, "fake-model", client, include_read_tools=True
+    )
+
+    assert record.tool_calls[0].tool_name == "get_order"
+    assert record.tool_calls[0].result["ok"] is True
+    assert record.tool_calls[0].result["data"]["id"] == order_id
+
+
+def test_read_tool_call_does_not_mutate_the_episode_db(mission_set):
+    mission = find_mission(mission_set, "m01_refund_full_clean")
+    order_id = next(a for a in mission.assertions if a.table == "orders").where["id"]
+    client = FakeClient(
+        [
+            fake_response(
+                [tool_block("tu_1", "get_refund", {"order_id": order_id})], "tool_use"
+            ),
+            fake_response([text_block("TASK_FAILED: nothing done.")], "end_turn"),
+        ]
+    )
+
+    record = loop.run_episode(
+        mission, SEED, "fake-model", client, include_read_tools=True
+    )
+
+    post = reload_dump(record.db_dump)
+    n = post.execute(
+        "SELECT COUNT(*) AS n FROM refunds WHERE order_id = ?", (order_id,)
+    ).fetchone()["n"]
+    assert n == 0  # a pure read leaves no trace

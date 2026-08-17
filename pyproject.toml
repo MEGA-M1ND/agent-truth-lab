@@ -26,6 +26,7 @@ atl-run = "agent_truth_lab.harness.runner:main"
 atl-report = "agent_truth_lab.harness.report:main"
 atl-rescore = "agent_truth_lab.harness.rescore:main"
 atl-compare = "agent_truth_lab.harness.compare:main"
+atl-readtools-report = "agent_truth_lab.harness.readtools:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

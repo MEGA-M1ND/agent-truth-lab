@@ -54,6 +54,10 @@ FALLBACK_PRICE = (5.00, 25.00)
 # episode. Input dominates because the tool schemas and system prompt are
 # resent every turn.
 TOKENS_PER_EPISODE = (4100, 260)
+# With read tools: 4 extra tool schemas resent every turn, plus occasional
+# extra turns for a check-then-act pattern. Conservative bump pending a
+# measured average.
+TOKENS_PER_EPISODE_READ_TOOLS = (5200, 340)
 
 
 @dataclass
@@ -68,6 +72,7 @@ class RunConfig:
     arms: list[str]
     structural_variance: bool = False
     models: list[str] = field(default_factory=list)
+    read_tools: bool = False
 
     @classmethod
     def load(cls, path: Path) -> RunConfig:
@@ -86,6 +91,7 @@ class RunConfig:
             temperature=data.get("temperature"),
             arms=list(data.get("arms", ["A", "B", "C", "D"])),
             structural_variance=bool(data.get("structural_variance", False)),
+            read_tools=bool(data.get("read_tools", False)),
         )
 
     def for_model(self, model: str) -> RunConfig:
@@ -102,6 +108,7 @@ class RunConfig:
             "temperature": self.temperature,
             "arms": self.arms,
             "structural_variance": self.structural_variance,
+            "read_tools": self.read_tools,
         }
 
 
@@ -125,11 +132,14 @@ def build_mission_set(
         conn.close()
 
 
-def estimate_cost(model: str, episodes: int) -> tuple[float, int, int]:
+def estimate_cost(
+    model: str, episodes: int, read_tools: bool = False
+) -> tuple[float, int, int]:
     """(usd, input_tokens, output_tokens) projected for a run of `episodes`."""
     price_in, price_out = PRICES.get(model, FALLBACK_PRICE)
-    total_in = TOKENS_PER_EPISODE[0] * episodes
-    total_out = TOKENS_PER_EPISODE[1] * episodes
+    per_episode = TOKENS_PER_EPISODE_READ_TOOLS if read_tools else TOKENS_PER_EPISODE
+    total_in = per_episode[0] * episodes
+    total_out = per_episode[1] * episodes
     usd = total_in / 1e6 * price_in + total_out / 1e6 * price_out
     return usd, total_in, total_out
 
@@ -149,9 +159,12 @@ def print_plan(config: RunConfig, mission_count: int) -> float:
     print(f"  mission set    : "
           f"{'structural variance (from seed)' if config.structural_variance else 'fixed'}")
     print(f"  arms           : {', '.join(config.arms)}")
+    print(f"  read tools     : {'on (agent can self-verify)' if config.read_tools else 'off'}")
     print(f"  max turns      : {config.max_turns}, max tokens: {config.max_tokens}")
     for model in config.models:
-        usd, tokens_in, tokens_out = estimate_cost(model, episodes_per_model)
+        usd, tokens_in, tokens_out = estimate_cost(
+            model, episodes_per_model, config.read_tools
+        )
         total += usd
         print(
             f"    {model:<22} ~{tokens_in:,} in / ~{tokens_out:,} out"
@@ -187,6 +200,7 @@ def run_seed(
             max_turns=config.max_turns,
             max_tokens=config.max_tokens,
             temperature=config.temperature,
+            include_read_tools=config.read_tools,
         )
         evaluation = arms.evaluate_episode(
             record.to_dict(), mission, include_recovery=include_recovery
@@ -300,6 +314,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--seeds", type=int, nargs="*", help="override config seeds")
     parser.add_argument("--model", help="run only this model, overriding the config")
+    parser.add_argument(
+        "--read-tools", action="store_true",
+        help="give the agent read-only tools (get_order, get_refund, ...) so it can"
+        " attempt to verify its own writes, overriding the config",
+    )
     parser.add_argument("--limit", type=int, help="run only the first N missions per seed")
     parser.add_argument(
         "--estimate-only", action="store_true", help="print the cost estimate and exit"
@@ -318,6 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         config.seeds = args.seeds
     if args.model:
         config = config.for_model(args.model)
+    if args.read_tools:
+        config = replace(config, read_tools=True)
 
     mission_count = len(build_mission_set(config.seeds[0], config.structural_variance))
     if args.limit is not None:

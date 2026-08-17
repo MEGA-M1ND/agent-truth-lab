@@ -508,3 +508,102 @@ def test_tool_result_envelope_shape(conn, clock):
     parsed = json.loads(result.to_json())
     assert set(parsed) == {"ok", "http_status", "data", "error"}
     assert parsed["ok"] is True and parsed["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# read tools (M7) — never mutate, genuinely correct
+# ---------------------------------------------------------------------------
+
+
+def test_get_order_happy_path(conn, clock):
+    order = first_order_with_status(conn, "delivered")
+    result = tools.get_order(conn, clock, order["id"])
+    assert result.ok and result.data["id"] == order["id"]
+    assert result.data["status"] == "delivered"
+    assert result.data["amount_paise"] == order["amount_paise"]
+
+
+def test_get_order_unknown(conn, clock):
+    result = tools.get_order(conn, clock, 424242)
+    assert not result.ok and result.http_status == 404
+
+
+def test_get_order_bad_type(conn, clock):
+    result = tools.get_order(conn, clock, "not-an-int")
+    assert not result.ok and result.http_status == 400
+
+
+def test_get_refund_empty_is_ok_not_error(conn, clock):
+    """No refund yet is a normal state, not a tool failure."""
+    order = first_order_with_status(conn, "delivered")
+    result = tools.get_refund(conn, clock, order["id"])
+    assert result.ok and result.http_status == 200
+    assert result.data == {"order_id": order["id"], "refunds": []}
+
+
+def test_get_refund_reflects_a_real_refund(conn, clock):
+    order = first_order_with_status(conn, "delivered")
+    issued = tools.issue_refund(conn, clock, order["id"], order["amount_paise"], "rtn")
+    result = tools.get_refund(conn, clock, order["id"])
+    assert result.ok
+    assert len(result.data["refunds"]) == 1
+    assert result.data["refunds"][0]["id"] == issued.data["refund_id"]
+    assert result.data["refunds"][0]["amount_paise"] == order["amount_paise"]
+
+
+def test_get_refund_unknown_order(conn, clock):
+    result = tools.get_refund(conn, clock, 424242)
+    assert not result.ok and result.http_status == 404
+
+
+def test_get_subscription_happy_path(conn, clock):
+    sub = conn.execute(
+        "SELECT * FROM subscriptions WHERE status = 'active' LIMIT 1"
+    ).fetchone()
+    result = tools.get_subscription(conn, clock, sub["id"])
+    assert result.ok and result.data["id"] == sub["id"]
+    assert result.data["status"] == "active"
+    assert result.data["latest_charge"] is None or isinstance(
+        result.data["latest_charge"], dict
+    )
+
+
+def test_get_subscription_reflects_latest_charge(conn, clock):
+    sub = conn.execute(
+        "SELECT s.* FROM subscriptions s JOIN customers c ON c.id = s.customer_id"
+        " WHERE s.status = 'past_due' AND c.balance_paise >= s.amount_paise LIMIT 1"
+    ).fetchone()
+    charged = tools.retry_subscription_charge(conn, clock, sub["id"])
+    assert charged.ok
+    result = tools.get_subscription(conn, clock, sub["id"])
+    assert result.data["status"] == "active"
+    assert result.data["latest_charge"]["status"] == "succeeded"
+    assert result.data["latest_charge"]["id"] == charged.data["charge_id"]
+
+
+def test_get_subscription_unknown(conn, clock):
+    result = tools.get_subscription(conn, clock, 999999)
+    assert not result.ok and result.http_status == 404
+
+
+def test_get_settlement_not_created_yet(conn, clock):
+    result = tools.get_settlement(conn, clock, "2025-12-30")
+    assert not result.ok and result.http_status == 404
+
+
+def test_get_settlement_reflects_a_real_settlement(conn, clock):
+    created = tools.create_settlement(conn, clock, db.HISTORY_DAYS[0])
+    result = tools.get_settlement(conn, clock, db.HISTORY_DAYS[0])
+    assert result.ok
+    assert result.data["id"] == created.data["settlement_id"]
+    assert result.data["net_paise"] == created.data["net_paise"]
+
+
+def test_read_tools_never_mutate(conn, clock):
+    before = db.dump(conn)
+    order = first_order_with_status(conn, "delivered")
+    tools.get_order(conn, clock, order["id"])
+    tools.get_refund(conn, clock, order["id"])
+    tools.get_subscription(conn, clock, 501)
+    tools.get_settlement(conn, clock, "2025-12-30")
+    assert db.dump(conn) == before
